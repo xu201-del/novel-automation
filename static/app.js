@@ -1,410 +1,314 @@
-const $ = (s, p) => (p || document).querySelector(s);
-const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
-const API = '/api';
-let state = {};
+// ─── API helpers ─────────────────────────────────────────
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
 
-function toast(msg) {
-    const t = $('#toast');
-    t.textContent = msg; t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 2200);
+async function api(url, opts = {}) {
+  const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
-function esc(s) {
-    const d = document.createElement('div');
-    d.textContent = s || ''; return d.innerHTML;
+// ─── Index page ──────────────────────────────────────────
+
+async function loadNovels() {
+  const list = $("#novel-list");
+  if (!list) return;
+  const novels = await api("/api/novels");
+  if (!novels.length) {
+    list.innerHTML = '<div class="empty"><h2>还没有作品</h2><p>点击右上角按钮创建你的第一部作品</p></div>';
+    return;
+  }
+  list.innerHTML = novels.map(n => `
+    <div class="novel-card" onclick="location='/novel/${n.id}'">
+      <h3>${esc(n.title)}</h3>
+      <div class="meta">
+        <span>${esc(n.genre) || '未分类'}</span>
+        <span>${n.chapter_count} 章</span>
+        <span>${n.word_count} 字</span>
+      </div>
+      <div class="actions" onclick="event.stopPropagation()">
+        <button class="btn" onclick="location='/novel/${n.id}'">编辑</button>
+        <button class="btn danger" onclick="deleteNovel(${n.id})">删除</button>
+      </div>
+    </div>`).join("");
 }
 
-function fmt(n) {
-    if (!n) return '0';
-    if (n > 10000) return (n / 10000).toFixed(1) + '万';
-    return String(n);
+function showCreateModal() { $("#create-modal").classList.remove("hidden"); }
+function closeCreateModal() { $("#create-modal").classList.add("hidden"); }
+
+async function createNovel() {
+  const title = $("#new-title").value.trim() || "未命名作品";
+  const genre = $("#new-genre").value.trim();
+  const style_guide = $("#new-style").value.trim();
+  const res = await api("/api/novels", {
+    method: "POST",
+    body: JSON.stringify({ title, genre, style_guide }),
+  });
+  location.href = `/novel/${res.id}`;
 }
 
-// ════════════════════════════════════════════
-//  Dashboard
-// ════════════════════════════════════════════
-
-async function loadList() {
-    const list = $('#list');
-    const novels = await fetch(`${API}/novels`).then(r => r.json());
-
-    if (!novels.length) {
-        list.outerHTML = `
-            <div class="empty-state">
-                <div class="icon">📖</div>
-                <h3>还没有作品</h3>
-                <p>创建你的第一部小说，AI 会帮你完成它</p>
-                <button class="btn btn-primary" onclick="showCreate()">开始创作</button>
-            </div>`;
-        return;
-    }
-
-    list.innerHTML = novels.map(n => `
-        <div class="card" onclick="location.href='/novel/${n.id}'">
-            <div class="card-cover">📖</div>
-            <div class="card-info">
-                <h3>${esc(n.title)}</h3>
-                <div class="card-meta">
-                    <span>${esc(n.genre) || '未分类'}</span>
-                    <span>${n.chapter_count} 章</span>
-                    <span>${fmt(n.word_count)} 字</span>
-                </div>
-                <div class="card-date">更新于 ${n.updated_at}</div>
-            </div>
-            <button class="btn-icon" onclick="event.stopPropagation();del(${n.id})" title="删除">×</button>
-        </div>
-    `).join('');
+async function deleteNovel(id) {
+  if (!confirm("确认删除这部作品及其所有章节？此操作不可撤销。")) return;
+  await api(`/api/novels/${id}`, { method: "DELETE" });
+  loadNovels();
 }
 
-function showCreate() { $('#modal').style.display = 'flex'; $('#m-title').focus(); }
-function closeModal() { $('#modal').style.display = 'none'; }
+// ─── Editor page ─────────────────────────────────────────
 
-async function create() {
-    const title = $('#m-title').value.trim();
-    if (!title) return toast('请输入书名');
-    const r = await fetch(`${API}/novels`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            title,
-            genre: $('#m-genre').value.trim(),
-            outline: $('#m-desc').value.trim()
-        })
-    });
-    const n = await r.json();
-    closeModal();
-    $('#m-title').value = $('#m-genre').value = $('#m-desc').value = '';
-    loadList();
-    toast('作品已创建');
+let currentChapterId = null;
+let aiFullText = "";
+let improvedText = "";
+
+async function loadEditor() {
+  await loadNovelInfo();
+  await loadChapters();
+  await loadCharacters();
 }
 
-async function del(id) {
-    if (!confirm('删除此作品及所有章节？')) return;
-    await fetch(`${API}/novels/${id}`, { method: 'DELETE' });
-    loadList();
-    toast('已删除');
+async function loadNovelInfo() {
+  const novel = await api(`/api/novels/${NOVEL_ID}`);
+  $("#novel-info").innerHTML = `
+    <h2>${esc(novel.title)}</h2>
+    <p>类型：${esc(novel.genre) || '未设置'}</p>
+    <p>总字数：${novel.word_count}</p>
+    ${novel.style_guide ? `<p>风格：${esc(novel.style_guide)}</p>` : ''}`;
 }
 
-// ════════════════════════════════════════════
-//  Novel Editor
-// ════════════════════════════════════════════
-
-async function init() {
-    const id = +window.location.pathname.match(/\/novel\/(\d+)/)?.[1];
-    if (!id) return;
-
-    const [novel, chapters, chars] = await Promise.all([
-        fetch(`${API}/novels/${id}`).then(r => r.json()),
-        fetch(`${API}/novels/${id}/chapters`).then(r => r.json()),
-        fetch(`${API}/novels/${id}/characters`).then(r => r.json()),
-    ]);
-
-    state = { novel, chapters, chars, currentChapter: null, aiText: '', tab: 'chapters' };
-
-    render();
+async function loadChapters() {
+  const chapters = await api(`/api/novels/${NOVEL_ID}/chapters`);
+  const nav = $("#chapter-nav");
+  nav.innerHTML = '<button class="btn full" onclick="addChapter()" style="margin-bottom:8px">+ 新章节</button>';
+  chapters.forEach(ch => {
+    const div = document.createElement("div");
+    div.className = `chapter-item${ch.id === currentChapterId ? ' active' : ''}`;
+    div.innerHTML = `<span>${esc(ch.title)}</span><span class="del" onclick="delChapter(${ch.id},event)">✕</span>`;
+    div.onclick = (e) => { if (!e.target.classList.contains("del")) openChapter(ch.id); };
+    nav.appendChild(div);
+  });
 }
 
-function render() {
-    const { novel, chapters, chars, currentChapter, tab } = state;
-
-    $('#app').innerHTML = `
-        <aside class="sidebar">
-            <div class="sidebar-header">
-                <h3>《${esc(novel.title)}》</h3>
-                <div class="meta">${esc(novel.genre) || '未分类'}</div>
-                <div class="sidebar-stats">
-                    <span><strong>${chapters.length}</strong> 章</span>
-                    <span><strong>${fmt(novel.word_count)}</strong> 字</span>
-                </div>
-            </div>
-            <div class="sidebar-body">
-                <div class="section-title">章节</div>
-                ${chapters.map(c => `
-                    <div class="chapter-item ${currentChapter && currentChapter.id === c.id ? 'active' : ''}"
-                         onclick="openChapter(${c.id})">
-                        <span><span class="num">${c.chapter_num}.</span>${esc(c.title)}</span>
-                        <span style="font-size:11px;color:var(--text3)">${c.word_count || 0}字</span>
-                    </div>
-                `).join('')}
-            </div>
-            <div class="sidebar-footer">
-                <button class="btn btn-ghost" onclick="newChapter()" style="width:100%;justify-content:center">+ 新建章节</button>
-                <button class="btn btn-ghost" onclick="window.open('/api/export/${novel.id}')" style="width:100%;justify-content:center">导出全文</button>
-            </div>
-        </aside>
-
-        <div class="editor">
-            <div class="editor-top">
-                <select onchange="openChapter(this.value)">
-                    <option value="">选择章节...</option>
-                    ${chapters.map(c => `<option value="${c.id}" ${currentChapter && currentChapter.id === c.id ? 'selected' : ''}>${c.title}</option>`).join('')}
-                </select>
-                <button class="btn btn-sm btn-ghost" onclick="aiContinue()">AI 续写</button>
-                <button class="btn btn-sm btn-ghost" onclick="aiPolish()">润色</button>
-                <span class="word-count" id="wc">0 字</span>
-            </div>
-            <div class="editor-body">
-                <input class="title" id="etitle" placeholder="章节标题"
-                       value="${esc(currentChapter?.title || '')}"
-                       onchange="autoSave()">
-                <textarea class="content" id="econtent" placeholder="开始写作，或点击「AI 续写」让 AI 帮你..."
-                          oninput="updateWC()">${currentChapter?.content || ''}</textarea>
-            </div>
-            ${currentChapter ? `
-            <div class="editor-bottom">
-                <button class="btn btn-primary btn-sm" onclick="save()">保存</button>
-                <button class="btn btn-ghost btn-sm" onclick="deleteChapter()">删除此章</button>
-            </div>` : ''}
-        </div>
-
-        <div class="ai-panel">
-            <div class="tabs">
-                <button class="tab ${tab === 'chapters' ? 'active' : ''}" onclick="switchTab('chapters')">章节</button>
-                <button class="tab ${tab === 'outline' ? 'active' : ''}" onclick="switchTab('outline')">大纲</button>
-                <button class="tab ${tab === 'chars' ? 'active' : ''}" onclick="switchTab('chars')">角色</button>
-            </div>
-            <div class="ai-panel-body">
-                ${tab === 'chapters' ? renderChaptersPanel() : ''}
-                ${tab === 'outline' ? renderOutlinePanel() : ''}
-                ${tab === 'chars' ? renderCharsPanel() : ''}
-            </div>
-            <div class="ai-panel-footer">
-                <input id="ai-prompt" placeholder="告诉 AI 怎么写..." onkeydown="if(event.key==='Enter')aiContinue()">
-                <button class="btn btn-primary btn-sm" onclick="aiContinue()">生成</button>
-            </div>
-        </div>
-    `;
-
-    updateWC();
+async function addChapter() {
+  const res = await api(`/api/novels/${NOVEL_ID}/chapters`, {
+    method: "POST",
+    body: JSON.stringify({ title: "新章节", content: "" }),
+  });
+  openChapter(res.id);
 }
-
-function renderChaptersPanel() {
-    const { novel, chapters } = state;
-    return `
-        <p style="font-size:12px;color:var(--text2);margin-bottom:10px">共 ${chapters.length} 章 · ${fmt(novel.word_count)} 字</p>
-        <div style="font-size:13px;color:var(--text2);line-height:1.8">
-            ${chapters.length ? `<p>最近更新：${chapters[chapters.length-1].title}</p>` : '<p>还没有章节，点击侧栏「新建章节」开始</p>'}
-            <p style="margin-top:8px">💡 在下方输入续写方向，点「生成」</p>
-        </div>`;
-}
-
-function renderOutlinePanel() {
-    return `
-        <textarea class="outline-textarea" id="ot" onchange="saveOutline()"
-                  placeholder="故事的梗概、分卷规划...">${esc(state.novel.outline || '')}</textarea>
-        <button class="btn btn-sm btn-ghost" style="margin-top:6px" onclick="genOutline()">AI 生成大纲</button>`;
-}
-
-function renderCharsPanel() {
-    return `
-        ${(state.chars || []).map(c => `
-            <div class="char-row">
-                <div><span class="name">${esc(c.name)}</span><span class="role">${esc(c.role)}</span></div>
-                <button class="btn-icon" onclick="delChar(${c.id})">×</button>
-            </div>
-        `).join('')}
-        <button class="btn btn-sm btn-ghost" style="margin-top:6px" onclick="addChar()">+ 添加角色</button>`;
-}
-
-function switchTab(tab) {
-    state.tab = tab;
-    render();
-}
-
-// ════════════════════════════════════════════
-//  Chapter Ops
-// ════════════════════════════════════════════
 
 async function openChapter(id) {
-    const ch = await fetch(`${API}/chapters/${id}`).then(r => r.json());
-    state.currentChapter = ch;
-    render();
+  currentChapterId = id;
+  const ch = await api(`/api/chapters/${id}`);
+  $("#chapter-title-input").value = ch.title;
+  $("#content-editor").value = ch.content;
+  $("#word-count").textContent = `${ch.word_count} 字`;
+  await loadChapters();
 }
 
-async function newChapter() {
-    const num = (state.chapters.length || 0) + 1;
-    const r = await fetch(`${API}/novels/${state.novel.id}/chapters`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chapter_num: num, title: `第${num}章`, content: '' })
-    });
-    const data = await r.json();
-    await refresh();
-    state.currentChapter = state.chapters.find(c => c.id === data.id);
-    render();
-    toast('新章节已创建');
+async function saveChapter() {
+  if (!currentChapterId) return;
+  const title = $("#chapter-title-input").value.trim();
+  const content = $("#content-editor").value;
+  await api(`/api/chapters/${currentChapterId}`, {
+    method: "PUT",
+    body: JSON.stringify({ title, content }),
+  });
+  $("#word-count").textContent = `${content.length} 字`;
+  await loadChapters();
 }
 
-async function save() {
-    if (!state.currentChapter) return toast('请先选择章节');
-    const title = $('#etitle')?.value || '';
-    const content = $('#econtent')?.value || '';
-    await fetch(`${API}/chapters/${state.currentChapter.id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, content })
-    });
-    await refresh();
-    toast('已保存');
+async function delChapter(id, ev) {
+  ev.stopPropagation();
+  if (!confirm("删除此章节？")) return;
+  await api(`/api/chapters/${id}`, { method: "DELETE" });
+  if (currentChapterId === id) { currentChapterId = null; $("#content-editor").value = ""; }
+  await loadChapters();
 }
 
-async function autoSave() { if (state.currentChapter) await save(); }
+// ─── Characters ──────────────────────────────────────────
 
-async function deleteChapter() {
-    if (!state.currentChapter) return;
-    if (!confirm('删除此章节？')) return;
-    await fetch(`${API}/chapters/${state.currentChapter.id}`, { method: 'DELETE' });
-    state.currentChapter = null;
-    await refresh();
-    render();
-    toast('已删除');
+async function loadCharacters() {
+  const chars = await api(`/api/novels/${NOVEL_ID}/characters`);
+  const panel = $("#char-panel");
+  panel.innerHTML = `<h3>角色管理</h3>
+    <div style="display:flex;gap:4px;margin-bottom:8px">
+      <input id="char-name" placeholder="角色名" style="flex:1;padding:6px;font-size:12px">
+      <button class="btn" style="padding:4px 8px;font-size:12px" onclick="addCharacter()">+</button>
+    </div>` +
+    chars.map(c => `<div class="char-item"><span>${esc(c.name)}${c.role ? ' ('+esc(c.role)+')' : ''}</span><span class="del" style="color:var(--danger);cursor:pointer" onclick="delChar(${c.id})">✕</span></div>`).join("");
 }
 
-function updateWC() {
-    const wc = $('#wc');
-    if (!wc) return;
-    const t = $('#econtent')?.value || '';
-    wc.textContent = t.replace(/\s/g, '').length + ' 字';
-}
-
-async function refresh() {
-    const id = state.novel.id;
-    const [novel, chapters, chars] = await Promise.all([
-        fetch(`${API}/novels/${id}`).then(r => r.json()),
-        fetch(`${API}/novels/${id}/chapters`).then(r => r.json()),
-        fetch(`${API}/novels/${id}/characters`).then(r => r.json()),
-    ]);
-    state.novel = novel;
-    state.chapters = chapters;
-    state.chars = chars;
-}
-
-// ════════════════════════════════════════════
-//  AI
-// ════════════════════════════════════════════
-
-async function aiContinue() {
-    const prompt = $('#ai-prompt')?.value || '继续推进剧情';
-    const content = $('#econtent')?.value || '';
-
-    // gather context
-    let ctx = '';
-    const last3 = state.chapters.slice(-3);
-    for (const ch of last3) {
-        if (ch.content) ctx += `${ch.title}\n${ch.content}\n\n`;
-    }
-    if (content && !ctx.includes(content)) ctx += content;
-
-    const chars = (state.chars || []).map(c => `${c.name}(${c.role}): ${c.description}`).join('\n');
-
-    // Show loading in AI panel
-    state.tab = 'chapters';
-    render();
-    const body = document.querySelector('.ai-panel-body');
-    body.innerHTML = '<div class="ai-output">⏳ AI 正在写作...</div>';
-
-    const resp = await fetch(`${API}/ai/continue`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            context: ctx || '新作品',
-            direction: prompt,
-            word_count: 1500,
-            characters: chars,
-            outline: state.novel.outline || ''
-        })
-    });
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let full = '';
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        for (const line of decoder.decode(value, { stream: true }).split('\n')) {
-            if (line.startsWith('data: ')) {
-                try {
-                    const d = JSON.parse(line.slice(6));
-                    if (d.content) { full += d.content; body.innerHTML = `<div class="ai-output">${full}</div>`; }
-                    if (d.done) { state.aiText = d.full || full; body.innerHTML += '<p style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="insertAI()">插入正文</button></p>'; }
-                } catch (e) { /* skip */ }
-            }
-        }
-    }
-}
-
-function insertAI() {
-    if (!state.aiText) return;
-    const ta = $('#econtent');
-    if (!ta) return;
-    ta.value = ta.value + (ta.value ? '\n\n' : '') + state.aiText;
-    state.aiText = '';
-    updateWC();
-    autoSave();
-    render();
-    toast('AI 内容已插入');
-}
-
-async function aiPolish() {
-    const content = $('#econtent')?.value;
-    if (!content) return toast('请先写内容');
-    toast('润色中...');
-    const r = await fetch(`${API}/ai/improve`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, style: '' })
-    });
-    const d = await r.json();
-    if (d.result) {
-        $('#econtent').value = d.result;
-        updateWC();
-        autoSave();
-        toast('润色完成');
-    }
-}
-
-async function genOutline() {
-    toast('生成大纲...');
-    const r = await fetch(`${API}/ai/outline`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            title: state.novel.title,
-            genre: state.novel.genre,
-            description: state.novel.outline || ''
-        })
-    });
-    const d = await r.json();
-    if (d.result) {
-        const ot = $('#ot');
-        if (ot) { ot.value = d.result; saveOutline(); }
-        toast('大纲已生成');
-    }
-}
-
-async function saveOutline() {
-    const outline = $('#ot')?.value || '';
-    await fetch(`${API}/novels/${state.novel.id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ outline })
-    });
-    state.novel.outline = outline;
-}
-
-// ════════════════════════════════════════════
-//  Characters
-// ════════════════════════════════════════════
-
-async function addChar() {
-    const name = prompt('角色名称：');
-    if (!name) return;
-    const role = prompt('定位（主角/配角/反派）：', '配角');
-    const desc = prompt('简介：', '');
-    await fetch(`${API}/novels/${state.novel.id}/characters`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, role, description: desc })
-    });
-    await refresh();
-    render();
+async function addCharacter() {
+  const name = $("#char-name").value.trim();
+  if (!name) return;
+  await api(`/api/novels/${NOVEL_ID}/characters`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  loadCharacters();
 }
 
 async function delChar(id) {
-    await fetch(`${API}/characters/${id}`, { method: 'DELETE' });
-    await refresh();
-    render();
+  await api(`/api/characters/${id}`, { method: "DELETE" });
+  loadCharacters();
 }
+
+// ─── AI Panel ────────────────────────────────────────────
+
+function switchAITab(name, btn) {
+  $$(".tab").forEach(t => t.classList.remove("active"));
+  btn.classList.add("active");
+  $$(".tab-content").forEach(c => c.classList.add("hidden"));
+  $(`#tab-${name}`).classList.remove("hidden");
+}
+
+async function aiContinue() {
+  const streamBox = $("#ai-stream");
+  const btnInsert = $("#btn-insert");
+  streamBox.textContent = "生成中...";
+  btnInsert.classList.add("hidden");
+  aiFullText = "";
+
+  const chContent = $("#content-editor").value;
+  const chars = await api(`/api/novels/${NOVEL_ID}/characters`);
+  const charsStr = chars.map(c => `${c.name}(${c.role})：${c.personality || ''}`).join("\n");
+  const novel = await api(`/api/novels/${NOVEL_ID}`);
+
+  const resp = await fetch("/api/ai/continue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      context: chContent,
+      direction: $("#ai-direction").value || "继续写下去",
+      word_count: parseInt($("#ai-wordcount").value) || 1500,
+      characters: charsStr,
+      outline: novel.outline,
+      style_guide: novel.style_guide,
+    }),
+  });
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  streamBox.textContent = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data: ")) {
+        const data = JSON.parse(line.slice(6));
+        if (data.content) { streamBox.textContent += data.content; aiFullText += data.content; }
+        if (data.done) { btnInsert.classList.remove("hidden"); streamBox.textContent += `\n\n— ${data.word_count} 字`; }
+      }
+    }
+  }
+}
+
+function insertAI() {
+  const editor = $("#content-editor");
+  editor.value += "\n\n" + aiFullText;
+  $("#ai-stream").textContent = "";
+  $("#btn-insert").classList.add("hidden");
+  aiFullText = "";
+  saveChapter();
+}
+
+async function aiImprove() {
+  const content = $("#content-editor").value;
+  if (!content) return alert("请先选择或创建章节内容");
+  const resultBox = $("#improve-result");
+  resultBox.textContent = "润色中...";
+  const data = await api("/api/ai/improve", {
+    method: "POST",
+    body: JSON.stringify({ content, style: $("#improve-style").value }),
+  });
+  improvedText = data.result;
+  resultBox.textContent = data.result;
+  $("#btn-replace").classList.remove("hidden");
+}
+
+function replaceImproved() {
+  $("#content-editor").value = improvedText;
+  $("#improve-result").textContent = "";
+  $("#btn-replace").classList.add("hidden");
+  saveChapter();
+}
+
+async function aiChat() {
+  const prompt = $("#advisor-prompt").value.trim();
+  if (!prompt) return;
+  const resultBox = $("#advisor-result");
+  resultBox.textContent = "思考中...";
+  const novel = await api(`/api/novels/${NOVEL_ID}`);
+  const data = await api("/api/ai/chat", {
+    method: "POST",
+    body: JSON.stringify({ prompt, context: novel.outline }),
+  });
+  resultBox.textContent = data.result;
+}
+
+async function aiGenerateOutline() {
+  if (!confirm("将根据已有内容重新生成大纲，确定？")) return;
+  const novel = await api(`/api/novels/${NOVEL_ID}`);
+  const chContent = $("#content-editor").value;
+  const data = await api("/api/ai/outline", {
+    method: "POST",
+    body: JSON.stringify({
+      title: novel.title, genre: novel.genre,
+      description: chContent.slice(-1000), style_guide: novel.style_guide,
+    }),
+  });
+  await api(`/api/novels/${NOVEL_ID}`, {
+    method: "PUT",
+    body: JSON.stringify({ outline: data.result }),
+  });
+  alert("大纲已生成并保存！");
+  loadNovelInfo();
+}
+
+async function aiSuggestTitle() {
+  const ch = await api(`/api/chapters/${currentChapterId}`);
+  if (!ch) return;
+  const data = await api("/api/ai/title", {
+    method: "POST",
+    body: JSON.stringify({ context: ch.content, chapter_num: ch.chapter_num }),
+  });
+  $("#chapter-title-input").value = data.result;
+  saveChapter();
+}
+
+async function aiSummarize() {
+  if (!currentChapterId) return alert("请先选择章节");
+  const ch = await api(`/api/chapters/${currentChapterId}`);
+  const data = await api("/api/ai/summary", {
+    method: "POST",
+    body: JSON.stringify({ content: ch.content }),
+  });
+  await api(`/api/chapters/${currentChapterId}`, {
+    method: "PUT",
+    body: JSON.stringify({ summary: data.result }),
+  });
+  alert("摘要已生成");
+}
+
+function exportNovel(fmt) {
+  window.open(`/api/export/${NOVEL_ID}?format=${fmt}`, "_blank");
+}
+
+// ─── Keyboard shortcuts ──────────────────────────────────
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveChapter(); }
+});
+
+// ─── Utils ───────────────────────────────────────────────
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ─── Boot ────────────────────────────────────────────────
+
+if (window.NOVEL_ID) loadEditor(); else loadNovels();

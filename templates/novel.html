@@ -1,21 +1,74 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>小说自动化项目</title>
-    <link rel="stylesheet" href="/static/style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>写作编辑器</title>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <nav>
-        <a href="/" class="nav-brand">小说自动化项目</a>
-        <a href="/" class="nav-link">← 作品列表</a>
-    </nav>
+<div id="app" class="editor-layout">
+  <aside id="sidebar">
+    <a href="/" class="back-link">← 作品列表</a>
+    <div id="novel-info"></div>
+    <nav id="chapter-nav"></nav>
+    <div id="char-panel"></div>
+  </aside>
 
-    <div class="editor-wrap" id="app"></div>
-    <div class="toast" id="toast"></div>
+  <main id="editor-pane">
+    <div id="editor-header"></div>
+    <textarea id="content-editor" placeholder="在这里写作，或使用 AI 面板生成内容..."></textarea>
+    <div id="editor-footer">
+      <span id="word-count">0 字</span>
+      <button class="btn" onclick="saveChapter()">保存 Ctrl+S</button>
+    </div>
+  </main>
 
-    <script src="/static/app.js"></script>
-    <script>init();</script>
+  <aside id="ai-panel">
+    <h3>AI 工具</h3>
+    <div class="tabs">
+      <button class="tab active" onclick="switchAITab('continue',this)">续写</button>
+      <button class="tab" onclick="switchAITab('improve',this)">润色</button>
+      <button class="tab" onclick="switchAITab('advisor',this)">顾问</button>
+    </div>
+
+    <div id="tab-continue" class="tab-content">
+      <label>续写方向</label>
+      <textarea id="ai-direction" rows="2" placeholder="如：主角踏入秘境，却发现..."></textarea>
+      <label>目标字数</label>
+      <input id="ai-wordcount" type="number" value="1500" min="500" max="5000" step="500">
+      <button class="btn primary full" onclick="aiContinue()">开始续写</button>
+      <div id="ai-stream" class="stream-box"></div>
+      <button id="btn-insert" class="btn full hidden" onclick="insertAI()">插入到编辑器</button>
+    </div>
+
+    <div id="tab-improve" class="tab-content hidden">
+      <label>润色风格（可选）</label>
+      <input id="improve-style" type="text" placeholder="如：更有画面感、压缩到300字">
+      <button class="btn primary full" onclick="aiImprove()">AI 润色</button>
+      <div id="improve-result" class="stream-box"></div>
+      <button id="btn-replace" class="btn full hidden" onclick="replaceImproved()">替换原文</button>
+    </div>
+
+    <div id="tab-advisor" class="tab-content hidden">
+      <textarea id="advisor-prompt" rows="3" placeholder="提问写作相关的问题..."></textarea>
+      <button class="btn primary full" onclick="aiChat()">提问</button>
+      <div id="advisor-result" class="stream-box"></div>
+    </div>
+
+    <hr>
+    <h3>自动化</h3>
+    <button class="btn full" onclick="aiGenerateOutline()">生成大纲</button>
+    <button class="btn full" onclick="aiSuggestTitle()">建议标题</button>
+    <button class="btn full" onclick="aiSummarize()">总结本章</button>
+    <button class="btn full" onclick="exportNovel('txt')">导出 TXT</button>
+    <button class="btn full" onclick="exportNovel('html')">导出 HTML</button>
+  </aside>
+</div>
+
+<script>
+  window.NOVEL_ID = {{ novel_id }};
+</script>
+<script src="/static/app.js"></script>
 </body>
 </html>
