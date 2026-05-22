@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Writora — AI 小说写作</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand">Writora</a>
+        <a href="/" class="nav-link">作品</a>
+    </nav>
+
+    <div class="container">
+        <div class="header">
+            <h1>我的作品</h1>
+            <button class="btn btn-primary" onclick="showCreate()">新建作品</button>
+        </div>
+        <div id="list" class="grid"></div>
+    </div>
+
+    <div class="modal-overlay" id="modal">
+        <div class="modal">
+            <h2>新建作品</h2>
+            <div class="field"><label>书名</label><input id="m-title" placeholder="给你的故事起个名字"></div>
+            <div class="field"><label>类型</label><input id="m-genre" placeholder="玄幻 · 都市 · 科幻 · 悬疑 ..."></div>
+            <div class="field"><label>简介</label><textarea id="m-desc" rows="3" placeholder="一句话描述你想写的故事"></textarea></div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+                <button class="btn btn-primary" onclick="create()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <script src="/static/app.js"></script>
+    <script>loadList();</script>
+</body>
+</html>
